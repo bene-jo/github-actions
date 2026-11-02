@@ -236,9 +236,17 @@ jobs:
           def redact(text):
               for value in sorted(secrets, key=len, reverse=True):
                   text = text.replace(value, "[REDACTED]")
-              text = re.sub(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----", "[REDACTED]", text, flags=re.S)
+              # Scan markers once, retaining the first opener until the next closer.
+              parts, start, cursor = [], None, 0
+              for marker in re.finditer(r"-----(BEGIN|END) [^-]*PRIVATE KEY-----", text):
+                  if marker[1] == "BEGIN" and start is None:
+                      start = marker.start()
+                  elif marker[1] == "END" and start is not None:
+                      parts.extend((text[cursor:start], "[REDACTED]"))
+                      cursor, start = marker.end(), None
+              text = "".join([*parts, text[cursor:]])
               # Start at word boundaries and split userinfo at its first colon to avoid quadratic backtracking.
-              text = re.sub(r"(\b\w+://)[^\s/@:]+:[^\s/@]+@", r"\1[REDACTED]@", text)
+              text = re.sub(r"(\b\w+://)[^\s/@:]*:[^\s/@]+@", r"\1[REDACTED]@", text)
               text = re.sub(r"\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", "[REDACTED]", text, flags=re.I)
               text = re.sub(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b", "[REDACTED]", text)
               # Match each key word once; do not retry its credential substrings if no separator follows.

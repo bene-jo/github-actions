@@ -112,6 +112,25 @@ class DiagnosticsTest(unittest.TestCase):
                 self.assertNotIn('tail', output)
                 self.assertIn('[REDACTED]', output)
 
+    def test_password_only_urls_are_redacted(self):
+        output, _ = self.run_diagnostics(logs=['Connection failed: redis://:cache-value@cache:6379/0'])
+        self.assertNotIn('cache-value', output)
+        self.assertIn('redis://[REDACTED]@cache:6379/0', output)
+
+    def test_private_key_blocks_keep_the_original_boundaries(self):
+        output, _ = self.run_diagnostics(logs=[
+            'before -----END RSA PRIVATE KEY-----',
+            '-----BEGIN RSA PRIVATE KEY-----first-sensitive',
+            '-----BEGIN PRIVATE KEY-----nested-sensitive-----END PRIVATE KEY----- after',
+            '-----BEGIN EC PRIVATE KEY-----second-sensitive-----END EC PRIVATE KEY-----',
+            '-----BEGIN PRIVATE KEY-----incomplete-marker',
+        ])
+        for value in ('first-sensitive', 'nested-sensitive', 'second-sensitive'):
+            self.assertNotIn(value, output)
+        self.assertIn('before -----END RSA PRIVATE KEY-----', output)
+        self.assertIn('[REDACTED] after', output)
+        self.assertIn('-----BEGIN PRIVATE KEY-----incomplete-marker', output)
+
     def test_unsupported_log_driver_is_not_queried(self):
         output, calls = self.run_diagnostics(driver='awsfirelens')
         self.assertIn('does not use awslogs', output)
@@ -126,8 +145,9 @@ class DiagnosticsTest(unittest.TestCase):
         code = """
 from test_ecs_diagnostics import DiagnosticsTest
 output, _ = DiagnosticsTest().run_diagnostics(logs=[
-    'a' * 250000, 'postgres://user:' + 'a:' * 100000,
+    'a' * 100000, 'postgres://user:' + 'a:' * 100000,
     'secret' * 40000,
+    '-----BEGIN RSA PRIVATE KEY-----' * 8000,
     'postgres://user:still-secret@host/db',
 ])
 assert 'still-secret' not in output
