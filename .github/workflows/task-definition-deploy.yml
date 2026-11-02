@@ -176,6 +176,7 @@ jobs:
           cat ${{ steps.render-app-container.outputs.task-definition }}
 
       - name: Deploy to Amazon ECS service
+        id: deploy-service
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
           task-definition: ${{ steps.render-app-container.outputs.task-definition }}
@@ -193,6 +194,82 @@ jobs:
           run-task-subnets: ${{ steps.fetch-task-definition.outputs.subnets }}
           run-task-started-by: GHA-${{ github.actor }}
           wait-for-task-stopped: true
+
+      - name: Report failed init task
+        if: ${{ failure() && steps.deploy-service.outcome == 'failure' && steps.deploy-service.outputs.run-task-arn != '' }}
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          TASK_ARNS: ${{ steps.deploy-service.outputs.run-task-arn }}
+          TASK_DEFINITION: ${{ steps.render-app-container.outputs.task-definition }}
+          CLUSTER: ${{ inputs.cluster }}
+          CONTAINER: ${{ inputs.container-name }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import uuid
+
+          def aws(*args):
+              result = subprocess.run(
+                  ["aws", *args, "--output", "json", "--no-cli-pager"],
+                  capture_output=True, text=True, timeout=30,
+              )
+              if result.returncode:
+                  # Do not echo CLI stderr, which may contain request values.
+                  raise RuntimeError("AWS diagnostics unavailable; check log permissions or stream availability")
+              return json.loads(result.stdout)
+
+          with open(os.environ["TASK_DEFINITION"]) as source:
+              definition = json.load(source)
+          container = next(c for c in definition["containerDefinitions"] if c["name"] == os.environ["CONTAINER"])
+          sensitive = re.compile(r"password|passwd|secret|token|authorization|api.?key|access.?key|credential", re.I)
+          values = dict(os.environ)
+          values.update({v["name"]: v["value"] for v in container.get("environment", [])})
+          secrets = [v for k, v in values.items() if v and sensitive.search(k)]
+
+          def redact(text):
+              for value in sorted(secrets, key=len, reverse=True):
+                  text = text.replace(value, "[REDACTED]")
+              text = re.sub(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----", "[REDACTED]", text, flags=re.S)
+              text = re.sub(r"(\w+://)[^\s/@]+:[^\s/@]+@", r"\1[REDACTED]@", text)
+              text = re.sub(r"\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", "[REDACTED]", text, flags=re.I)
+              text = re.sub(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b", "[REDACTED]", text)
+              text = re.sub(r"(?i)((?:password|passwd|secret|token|authorization|api.?key|access.?key|credential)[\w-]*[\"']?\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)", r"\1[REDACTED]", text)
+              return re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
+
+          tasks = aws("ecs", "describe-tasks", "--cluster", os.environ["CLUSTER"], "--tasks", *json.loads(os.environ["TASK_ARNS"]))
+          for task in tasks.get("tasks", []):
+              if task.get("lastStatus") != "STOPPED" or all(c.get("exitCode") == 0 for c in task.get("containers", [])):
+                  continue
+              details = {
+                  "task": task["taskArn"], "stopCode": task.get("stopCode"), "reason": task.get("stoppedReason"),
+                  "containers": [{k: c.get(k) for k in ("name", "exitCode", "reason")} for c in task.get("containers", [])],
+              }
+              # Log content is data, never a GitHub workflow command.
+              marker = uuid.uuid4().hex
+              print(f"::stop-commands::{marker}", flush=True)
+              try:
+                  print(redact(json.dumps(details)))
+                  config = container.get("logConfiguration", {})
+                  if config.get("logDriver") != "awslogs":
+                      print("Application logs unavailable: task does not use awslogs")
+                      continue
+                  options = config["options"]
+                  stream = f"{options['awslogs-stream-prefix']}/{container['name']}/{task['taskArn'].rsplit('/', 1)[-1]}"
+                  logs = aws("logs", "get-log-events", "--region", options["awslogs-region"],
+                             "--log-group-name", options["awslogs-group"], "--log-stream-name", stream,
+                             "--limit", "100", "--no-start-from-head", "--no-paginate")
+                  excerpt = redact("\n".join(event["message"] for event in logs.get("events", [])))
+                  print("Application log excerpt (last page, at most 100 events / 12000 characters):")
+                  print(excerpt[-12000:] if excerpt else "No application log events available yet")
+              except (RuntimeError, subprocess.TimeoutExpired) as error:
+                  print("Application logs unavailable: " + type(error).__name__)
+              finally:
+                  print(f"::{marker}::", flush=True)
+          PY
 
   deploy-sidecars:
     name: Deploy supporting services
