@@ -100,6 +100,18 @@ class DiagnosticsTest(unittest.TestCase):
                 self.assertEqual(json.loads(logged_json)['message'], '[REDACTED]')
                 self.assertNotIn(password, output)
 
+    def test_credential_fields_consume_escaped_quotes_in_unknown_values(self):
+        for key in ('password', 'DB_PASSWORD', 'api key', 'aws.secret_access_key'):
+            with self.subTest(key=key):
+                output, _ = self.run_diagnostics(logs=[
+                    json.dumps({key: 'unknown-"suffix\\tail'}),
+                    f"{key}='unknown-\\'suffix\\\\tail'",
+                ])
+                self.assertNotIn('unknown-', output)
+                self.assertNotIn('suffix', output)
+                self.assertNotIn('tail', output)
+                self.assertIn('[REDACTED]', output)
+
     def test_unsupported_log_driver_is_not_queried(self):
         output, calls = self.run_diagnostics(driver='awsfirelens')
         self.assertIn('does not use awslogs', output)
@@ -114,7 +126,8 @@ class DiagnosticsTest(unittest.TestCase):
         code = """
 from test_ecs_diagnostics import DiagnosticsTest
 output, _ = DiagnosticsTest().run_diagnostics(logs=[
-    'a' * 500000, 'postgres://user:' + 'a:' * 100000,
+    'a' * 250000, 'postgres://user:' + 'a:' * 100000,
+    'secret' * 40000,
     'postgres://user:still-secret@host/db',
 ])
 assert 'still-secret' not in output
