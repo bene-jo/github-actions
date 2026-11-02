@@ -228,7 +228,10 @@ jobs:
           sensitive = re.compile(r"password|passwd|secret|token|authorization|api.?key|access.?key|credential", re.I)
           values = dict(os.environ)
           values.update({v["name"]: v["value"] for v in container.get("environment", [])})
-          secrets = [v for k, v in values.items() if v and sensitive.search(k)]
+          secrets = {
+              variant for k, v in values.items() if v and sensitive.search(k)
+              for variant in (v, json.dumps(v)[1:-1], json.dumps(v, ensure_ascii=False)[1:-1])
+          }
 
           def redact(text):
               for value in sorted(secrets, key=len, reverse=True):

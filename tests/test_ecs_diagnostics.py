@@ -18,10 +18,10 @@ TASK = 'arn:aws:ecs:eu-central-1:123:task/staging/exact-task-id'
 
 
 class DiagnosticsTest(unittest.TestCase):
-    def run_diagnostics(self, *, exit_code=1, status='STOPPED', driver='awslogs', logs=None, denied=False):
+    def run_diagnostics(self, *, exit_code=1, status='STOPPED', driver='awslogs', logs=None, denied=False, password='known-password'):
         calls = []
         definition = {'containerDefinitions': [{
-            'name': 'app', 'environment': [{'name': 'DB_PASSWORD', 'value': 'known-password'}],
+            'name': 'app', 'environment': [{'name': 'DB_PASSWORD', 'value': password}],
             'logConfiguration': {'logDriver': driver, 'options': {
                 'awslogs-group': 'ecs/kraken-staging', 'awslogs-region': 'eu-central-1',
                 'awslogs-stream-prefix': 'ecs',
@@ -89,6 +89,16 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertIn('"exitCode": 1', output)
         self.assertIn('Application logs unavailable', output)
         self.assertNotIn('secret stderr', output)
+
+    def test_json_escaped_known_credentials_are_redacted_in_message_fields(self):
+        password = 'synthetic-"quote\\backslash-ü'
+        for ensure_ascii in (True, False):
+            with self.subTest(ensure_ascii=ensure_ascii):
+                message = json.dumps({'message': password}, ensure_ascii=ensure_ascii)
+                output, _ = self.run_diagnostics(password=password, logs=[message, password])
+                logged_json = next(line for line in output.splitlines() if line.startswith('{"message":'))
+                self.assertEqual(json.loads(logged_json)['message'], '[REDACTED]')
+                self.assertNotIn(password, output)
 
     def test_unsupported_log_driver_is_not_queried(self):
         output, calls = self.run_diagnostics(driver='awsfirelens')
