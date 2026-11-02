@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -98,6 +99,19 @@ class DiagnosticsTest(unittest.TestCase):
         output, _ = self.run_diagnostics(logs=['x' * 20000])
         self.assertIn('x' * 12000, output)
         self.assertNotIn('x' * 12001, output)
+
+    def test_large_log_redaction_finishes_without_exposing_credentials(self):
+        code = """
+from test_ecs_diagnostics import DiagnosticsTest
+output, _ = DiagnosticsTest().run_diagnostics(logs=[
+    'a' * 500000, 'postgres://user:' + 'a:' * 100000,
+    'postgres://user:still-secret@host/db',
+])
+assert 'still-secret' not in output
+assert 'postgres://[REDACTED]@host/db' in output
+"""
+        subprocess.run([sys.executable, '-B', '-c', code], cwd=Path(__file__).parent,
+                       capture_output=True, text=True, check=True, timeout=5)
 
     def test_failure_only_step_preserves_migration_gate(self):
         self.assertIn("failure() && steps.deploy-service.outcome == 'failure'", TEXT)
