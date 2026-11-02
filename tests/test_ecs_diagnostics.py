@@ -112,10 +112,29 @@ class DiagnosticsTest(unittest.TestCase):
                 self.assertNotIn('tail', output)
                 self.assertIn('[REDACTED]', output)
 
-    def test_password_only_urls_are_redacted(self):
-        output, _ = self.run_diagnostics(logs=['Connection failed: redis://:cache-value@cache:6379/0'])
-        self.assertNotIn('cache-value', output)
-        self.assertIn('redis://[REDACTED]@cache:6379/0', output)
+    def test_url_userinfo_is_redacted_with_or_without_a_password(self):
+        for url, expected in (
+            ('redis://:cache-value@cache:6379/0', 'redis://[REDACTED]@cache:6379/0'),
+            ('https://access-value@host/path', 'https://[REDACTED]@host/path'),
+            ('https://user:password-value@host/path', 'https://[REDACTED]@host/path'),
+        ):
+            with self.subTest(url=url):
+                output, _ = self.run_diagnostics(logs=['Connection failed: ' + url])
+                self.assertNotIn('-value', output)
+                self.assertIn(expected, output)
+
+    def test_authorization_values_are_fully_redacted(self):
+        for value in ('Token credential-value', 'ApiKey credential-value',
+                      'Digest username="user", response="credential-value", nonce="nonce-value"'):
+            with self.subTest(value=value):
+                output, _ = self.run_diagnostics(logs=[
+                    'Authorization: ' + value + '\nnext-line-context',
+                    json.dumps({'Authorization': value, 'error': 'quoted-context'}),
+                ])
+                self.assertNotIn('credential-value', output)
+                self.assertNotIn('nonce-value', output)
+                self.assertIn('next-line-context', output)
+                self.assertIn('quoted-context', output)
 
     def test_private_key_blocks_keep_the_original_boundaries(self):
         output, _ = self.run_diagnostics(logs=[

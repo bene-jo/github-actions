@@ -245,14 +245,15 @@ jobs:
                       parts.extend((text[cursor:start], "[REDACTED]"))
                       cursor, start = marker.end(), None
               text = "".join([*parts, text[cursor:]])
-              # Start at word boundaries and split userinfo at its first colon to avoid quadratic backtracking.
-              text = re.sub(r"(\b\w+://)[^\s/@:]*:[^\s/@]+@", r"\1[REDACTED]@", text)
+              # Start at word boundaries and mask the entire userinfo, including token-only URLs.
+              text = re.sub(r"(\b\w+://)[^\s/@]+@", r"\1[REDACTED]@", text)
               text = re.sub(r"\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", "[REDACTED]", text, flags=re.I)
               text = re.sub(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b", "[REDACTED]", text)
               # Match each key word once; do not retry its credential substrings if no separator follows.
               key = r"(?i)(?<![\w-])((?>[\w-]*(?:password|passwd|secret|token|authorization|api.?key|access.?key|credential)[\w-]*)[\"']?\s*[:=]\s*)"
-              value = r"(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,;]+)"
-              text = re.sub(key + value, r"\1[REDACTED]", text)
+              quoted = r"\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'"
+              text = re.sub(r"(?i)(\bauthorization[\"']?[ \t]*[:=][ \t]*)" + rf"(?:{quoted}|[^\r\n]+)", r"\1[REDACTED]", text)
+              text = re.sub(key + rf"(?:{quoted}|[^\s,;]+)", r"\1[REDACTED]", text)
               return re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
 
           tasks = aws("ecs", "describe-tasks", "--cluster", os.environ["CLUSTER"], "--tasks", *json.loads(os.environ["TASK_ARNS"]))
